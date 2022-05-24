@@ -1,4 +1,4 @@
-module homeostatis
+module homeostasis
 
 using Cyton
 import Cyton: shouldDie, shouldDivide, inherit, step, stimulate, FateTimer, Stimulus
