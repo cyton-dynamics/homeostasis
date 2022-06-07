@@ -1,4 +1,4 @@
-module homeostatis
+module homeostasis
 
 using Cyton
 import Cyton: shouldDie, shouldDivide, inherit, step, stimulate, FateTimer, Stimulus
@@ -7,6 +7,33 @@ import Cyton: shouldDie, shouldDivide, inherit, step, stimulate, FateTimer, Stim
 abstract type Parameters end
 struct NoParms <: Parameters end
 #----------------------------------------------------------
+
+# Parameters from fitting MR-70 with cyton solver. (σ for subsequent division is a guess)
+λ_subsequentDivision = LogNormalParms(log(11.1), 0.08)
+λ_death = LogNormalParms(log(175.8), 0.34)
+
+# Made up Parameters
+λ_mycDecay = LogNormalParms(log(log(2)/24), 0.34)
+mycThreshold = LogNormalParms(log(1), 0.2)
+mycInitial = LogNormalParms(log(2), 0.2)
+
+"This function creates cells at the beginning of the simulation"
+function cellFactory(birth::Time=0.0 ;parms::Parameters=NoParms(), cellType::T=GenericCell()) where T <: CellType
+  cell = Cell(birth, cellType)
+  
+  myc = MycTimer(λ_mycDecay, mycInitial, mycThreshold)
+  addTimer(cell, myc)
+
+  divisionTimer = DivisionTimer(λ_subsequentDivision)
+  addTimer(cell, divisionTimer)
+
+  deathTimer = DeathTimer(λ_death)
+  addTimer(cell, deathTimer)
+
+  addObserver(DivisionDestiny(), cell, destinyReached)
+
+  return cell
+end
 
 #------------------- Myc destiny timer --------------------
 "The event that indicates that the cell has reached division destiny"
@@ -24,7 +51,7 @@ end
 MycTimer(λ::DistributionParmSet, myc::DistributionParmSet, threshold::DistributionParmSet) = MycTimer(draw(λ), draw(myc), draw(threshold))
 
 "At each time step Myc decays but is also driven by constant exogenous stimulus"
-function step(myc::MycTimer, time::Float64, Δt::Float64)::Union{CellEvent, Nothing}
+function step(myc::MycTimer, time::Time, Δt::Duration)::Union{CellEvent, Nothing}
   myc.myc *= exp(-myc.λ*Δt)
   if myc.myc < myc.threshold
     return DivisionDestiny()
