@@ -28,8 +28,10 @@ end
 
 @info rpad(lpad(" start ", 30, "-"), 55, "-")
 @info "Creating population"
-population = createPopulation(100, (birth) -> homeostasis.cellFactory(birth))
+environment=environmentFactory()
+population = createPopulation(100, (birth) -> homeostasis.cellFactory(birth),environment)
 @info "Running model"
 run(population, 100.0)
 @info "done"
 @info rpad(lpad(" end ", 31, "-"), 56, "-")
+
