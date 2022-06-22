@@ -79,6 +79,12 @@ function destinyReached(::DivisionDestiny, cell::Cell, ::Time)
     end
   end
 end
+
+function update(myc::MycTimer,::Time, Δt::Duration,strength::Float64)
+
+  myc.myc +=strength*(1- exp(-myc.λ*Δt))/myc.λ
+
+end
 #----------------------------------------------------------
 #--------------------------Death Protien-------------------------------
 "The state of the Dpro timer"
@@ -90,7 +96,7 @@ mutable struct DproTimer <: FateTimer
   # If Dpro drops below this threshold, then the cell dies
   threshold::Float64
 end
-DproTimer(λ::DistributionParmSet, dpro::DistributionParmSet, threshold::DistributionParmSet) = DproTimer(sample(λ), sample(myc), sample(threshold))
+DproTimer(λ::DistributionParmSet, dpro::DistributionParmSet, threshold::DistributionParmSet) = DproTimer(sample(λ), sample(dpro), sample(threshold))
 
 "At each time step Dpro decays but is also driven by constant exogenous stimulus"
 function step(dpro::DproTimer, time::Float64, Δt::Duration)::Union{CellEvent, Nothing}
@@ -104,6 +110,12 @@ end
 
 "Daughter cells inherit the mother's Death protien timer"
 inherit(dpro::DproTimer, ::Time) = dpro
+
+function update(dpro::DproTimer,::Time, Δt::Duration,strength::Float64)
+
+  dpro.dpro +=strength*(1- exp(-dpro.λ*Δt))/dpro.λ
+
+end
 
 #----------------------------------------------------------------------
 #------------------ Division machinery --------------------
@@ -235,17 +247,18 @@ n_bound_to_cell::Float64=0.0
 function interact(IL7::IL7, cell::Cell, time::Time, Δt::Duration)
 
   α_myc=LogNormalParms(log(log(2)/24), 0.34)
-  myc_stim=ExogeneousStimulus(sample(α_myc)*frac_ocu(IL7.concentration,affinity_to_cell))
+  myc_stim=sample(α_myc)*frac_ocu(IL7.concentration,affinity_to_cell)
   α_dpro=LogNormalParms(log(log(2)/24), 0.34)
-  dpro_stim=ExogeneousStimulus(sample(α_dpro)*frac_ocu(IL7.concentration,affinity_to_cell))
+  dpro_stim=sample(α_dpro)*frac_ocu(IL7.concentration,affinity_to_cell)
   
   myctimer=filter(x->typeof(x)==MycTimer,cell.timers)
   dprotimer=filter(x->typeof(x)==DproTimer,cell.timers)
 
-  stimulate(myctimer,myc_stim,time,Δt)
-  stimulate(dprotimer,dpro_stim,time,Δt) 
+  update(myctimer,time,Δt,myc_stim)
+  update(dprotimer,time,Δt,dpro_stim) 
 
 end
 
 
 end # module homeostasis
+
