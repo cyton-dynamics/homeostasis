@@ -1,8 +1,10 @@
 module homeostasis
 
+
 using Cyton
 import Cyton: shouldDie, shouldDivide, inherit, step, stimulate, FateTimer, Stimulus
 
+export interact,environmentFactory,IL7,DeathTimer,shouldDivide, cellFactory,DivisionDestiny,MycTimer,step,inherit,destinyReached, update, DproTimer,DivisionTimer
 #----------------------- Parameters -----------------------
 abstract type Parameters end
 struct NoParms <: Parameters end
@@ -10,7 +12,7 @@ struct NoParms <: Parameters end
 
 # Parameters from fitting MR-70 with cyton solver. (σ for subsequent division is a guess)
 λ_subsequentDivision = LogNormalParms(log(11.1), 0.08)
-λ_death = LogNormalParms(log(175.8), 0.34)
+λ_death = LogNormalParms(log(12.8), 0.34)
 
 # Made up Parameters
 λ_mycDecay = LogNormalParms(log(log(2)/24), 0.34)
@@ -32,11 +34,11 @@ function cellFactory(birth::Time=0.0 ;parms::Parameters=NoParms(), cellType::T=G
   myc = MycTimer(λ_mycDecay, mycInitial, mycThreshold)
   addTimer(cell, myc)
 
-  divisionTimer = DivisionTimer(λ_subsequentDivision)
-  addTimer(cell, divisionTimer)
+  division_Timer = DivisionTimer(λ_subsequentDivision)
+  addTimer(cell, division_Timer)
 
-  deathTimer = DeathTimer(λ_death)
-  addTimer(cell, deathTimer)
+  death_Timer = DeathTimer(λ_death)
+  addTimer(cell, death_Timer)
 
   addObserver(DivisionDestiny(), cell, destinyReached)
 
@@ -198,21 +200,17 @@ The current free level of the IL7 in the system
 
 """
 
-affinity_to_cell=4
-production_rate=10
-absorption_rate_IL7=2
+affinity_to_cell=10
+production_rate=200.00
+absorption_rate_IL7=2.00
 #---------Environment type and population creation-----
 mutable struct IL7<: EnvironmentalAgent
   concentration::Float64
 end
 
-function IL7()::IL7
-  return IL7(100)
-end
+make_IL7()=IL7(1000.00)
 
-function IL7(conc::Float64)::IL7
-  return IL7(conc)
-end
+make_IL7(conc::Float64)=IL7(conc)
 
 """
 environmentFactory()
@@ -221,13 +219,19 @@ Function to create a bunch of environment agents at the start of the simulation
 """
 
 function environmentFactory()::Vector{EnvironmentalAgent}
-  environmentAgents=[]
-  IL7=IL7(20)
-  push!(environmentAgents,IL7)
+  environmentAgents=EnvironmentalAgent[]
+  
+  IL7_environment=make_IL7(100.0)
+ 
+  push!(environmentAgents,IL7_environment)
   return environmentAgents
 end
 
 function frac_ocu(concentration::Float64,affinity_to_cell::Int)
+  if concentration<0
+    println("CONCENTRATION GOING BELOW 0...INVALID MODEL ")
+    return 0.0
+  end
   frac_ocu=log(concentration)^affinity_to_cell/(1+log(concentration)^affinity_to_cell)
   return frac_ocu
 end
@@ -236,13 +240,13 @@ function step(IL7::IL7,time::Time,Δt::Duration,model::CytonModel )
   number_of_cells=length(model.cells)
   IL7.concentration+=production_rate*Δt 
   IL7.concentration-=number_of_cells*absorption_rate_IL7*Δt*frac_ocu(IL7.concentration,affinity_to_cell)
-
+  return nothing
 end
 #------------------------------------------------------
 
 
 #--------Defining the interact() funciton--------------
-n_bound_to_cell::Float64=0.0
+
 
 function interact(IL7::IL7, cell::Cell, time::Time, Δt::Duration)
 
@@ -258,7 +262,4 @@ function interact(IL7::IL7, cell::Cell, time::Time, Δt::Duration)
   update(dprotimer,time,Δt,dpro_stim) 
 
 end
-
-
-end # module homeostasis
 
