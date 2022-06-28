@@ -1,10 +1,12 @@
+
 module homeostasis
 
 
 using Cyton
-import Cyton: shouldDie, shouldDivide, inherit, step, stimulate, FateTimer, Stimulus
+import Cyton: shouldDie, shouldDivide, inherit, step, stimulate, FateTimer, Stimulus,CytonModel
 
-export interact,environmentFactory,IL7,DeathTimer,shouldDivide, cellFactory,DivisionDestiny,MycTimer,step,inherit,destinyReached, update, DproTimer,DivisionTimer
+
+export interact,environmentFactory,IL7,DeathTimer,shouldDivide,cellFactory,DivisionDestiny,MycTimer,step,inherit,destinyReached, update, DproTimer,DivisionTimer
 #----------------------- Parameters -----------------------
 abstract type Parameters end
 struct NoParms <: Parameters end
@@ -33,12 +35,14 @@ function cellFactory(birth::Time=0.0 ;parms::Parameters=NoParms(), cellType::T=G
   
   myc = MycTimer(λ_mycDecay, mycInitial, mycThreshold)
   addTimer(cell, myc)
+  dpro = DproTimer(λ_dproDecay, dproInitial, dproThreshold)
+  addTimer(cell, dpro)
 
-  division_Timer = DivisionTimer(λ_subsequentDivision)
-  addTimer(cell, division_Timer)
+  divisionTimer = DivisionTimer(λ_subsequentDivision)
+  addTimer(cell, divisionTimer)
 
-  death_Timer = DeathTimer(λ_death)
-  addTimer(cell, death_Timer)
+  deathTimer = DeathTimer(λ_death)
+  addTimer(cell, deathTimer)
 
   addObserver(DivisionDestiny(), cell, destinyReached)
 
@@ -200,17 +204,17 @@ The current free level of the IL7 in the system
 
 """
 
-affinity_to_cell=10
-production_rate=200.00
-absorption_rate_IL7=2.00
+affinity_to_cell=15
+production_rate=1000.00
+absorption_rate_IL7=1.00
 #---------Environment type and population creation-----
 mutable struct IL7<: EnvironmentalAgent
   concentration::Float64
 end
 
-make_IL7()=IL7(1000.00)
+makeIL7()=IL7(10000.00)
 
-make_IL7(conc::Float64)=IL7(conc)
+makeIL7(conc::Float64)=IL7(conc)
 
 """
 environmentFactory()
@@ -221,7 +225,7 @@ Function to create a bunch of environment agents at the start of the simulation
 function environmentFactory()::Vector{EnvironmentalAgent}
   environmentAgents=EnvironmentalAgent[]
   
-  IL7_environment=make_IL7(100.0)
+  IL7_environment=makeIL7(10000.0)
  
   push!(environmentAgents,IL7_environment)
   return environmentAgents
@@ -229,7 +233,9 @@ end
 
 function frac_ocu(concentration::Float64,affinity_to_cell::Int)
   if concentration<0
-    println("CONCENTRATION GOING BELOW 0...INVALID MODEL ")
+    @warn "CONCENTRATION GOING BELOW 0...INVALID MODEL "
+    @error "Model terminated due to undefined value of concentration"
+    throw(error())
     return 0.0
   end
   frac_ocu=log(concentration)^affinity_to_cell/(1+log(concentration)^affinity_to_cell)
@@ -248,18 +254,22 @@ end
 #--------Defining the interact() funciton--------------
 
 
-function interact(IL7::IL7, cell::Cell, time::Time, Δt::Duration)
-
+function interact(IL7::EnvironmentalAgent, cell::Cell{T}, time::Time, Δt::Duration) where T<:CellType
+  
   α_myc=LogNormalParms(log(log(2)/24), 0.34)
   myc_stim=sample(α_myc)*frac_ocu(IL7.concentration,affinity_to_cell)
   α_dpro=LogNormalParms(log(log(2)/24), 0.34)
   dpro_stim=sample(α_dpro)*frac_ocu(IL7.concentration,affinity_to_cell)
   
-  myctimer=filter(x->typeof(x)==MycTimer,cell.timers)
-  dprotimer=filter(x->typeof(x)==DproTimer,cell.timers)
+  
+  myctimer=filter(timer->typeof(timer)==MycTimer,cell.timers)
+  dprotimer=filter(timer->typeof(timer)==DproTimer,cell.timers)
+  
 
-  update(myctimer,time,Δt,myc_stim)
-  update(dprotimer,time,Δt,dpro_stim) 
+  update(myctimer[1],time,Δt,myc_stim)
+  update(dprotimer[1],time,Δt,dpro_stim) 
+
+end
 
 end
 
