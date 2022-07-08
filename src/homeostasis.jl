@@ -3,18 +3,22 @@ module homeostasis
 
 
 using Cyton
-import Cyton: shouldDie, shouldDivide, inherit, step, stimulate, FateTimer, Stimulus,CytonModel
+import Cyton: shouldDie, shouldDivide, inherit, step, stimulate, FateTimer, Stimulus,CytonModel,interact
 
 
-export interact,environmentFactory,IL7,DeathTimer,shouldDivide,cellFactory,DivisionDestiny,MycTimer,step,inherit,destinyReached, update, DproTimer,DivisionTimer
+export interact,environmentFactory,IL7,DeathTimer,shouldDivide,cellFactory,DivisionDestiny,MycTimer,step,inherit,destinyReached, update, DproTimer,DivisionTimer,DecideToDivide,commitToDivide
 #----------------------- Parameters -----------------------
 abstract type Parameters end
 struct NoParms <: Parameters end
 #----------------------------------------------------------
+"Parameters of the Cell Cycle"
+min_duration_G1=3
+duration_SG2M=6
+
 
 # Parameters from fitting MR-70 with cyton solver. (σ for subsequent division is a guess)
 λ_subsequentDivision = LogNormalParms(log(11.1), 0.08)
-λ_death = LogNormalParms(log(12.8), 0.34)
+λ_death = LogNormalParms(log(300), 0.34)
 
 # Made up Parameters
 λ_mycDecay = LogNormalParms(log(log(2)/24), 0.34)
@@ -23,9 +27,9 @@ mycInitial = LogNormalParms(log(2), 0.2)
 
 
 
-λ_dproDecay = LogNormalParms(log(log(2)/24), 0.34)
+λ_dproDecay = LogNormalParms(log(log(2)/150), 0.34)
 dproThreshold = LogNormalParms(log(1), 0.2)
-dproInitial = LogNormalParms(log(2), 0.2)
+dproInitial = LogNormalParms(log(5), 0.2)
 
 
 
@@ -44,7 +48,8 @@ function cellFactory(birth::Time=0.0 ;parms::Parameters=NoParms(), cellType::T=G
   deathTimer = DeathTimer(λ_death)
   addTimer(cell, deathTimer)
 
-  addObserver(DivisionDestiny(), cell, destinyReached)
+  #addObserver(DivisionDestiny(), cell, destinyReached)
+  addObserver(DecideToDivide(), cell, commitToDivide)
 
   return cell
 end
@@ -52,6 +57,8 @@ end
 #------------------- Myc destiny timer --------------------
 "The event that indicates that the cell has reached division destiny"
 struct DivisionDestiny <: CellEvent end
+
+struct DecideToDivide <: CellEvent end 
 
 "The state of the Myc timer"
 mutable struct MycTimer <: FateTimer
@@ -64,11 +71,22 @@ mutable struct MycTimer <: FateTimer
 end
 MycTimer(λ::DistributionParmSet, myc::DistributionParmSet, threshold::DistributionParmSet) = MycTimer(sample(λ), sample(myc), sample(threshold))
 
-"At each time step Myc decays but is also driven by constant exogenous stimulus"
+# "At each time step Myc decays but is also driven by constant exogenous stimulus"
+# function step(myc::MycTimer, time::Time, Δt::Duration)::Union{CellEvent, Nothing}
+#   myc.myc *= exp(-myc.λ*Δt)
+#   if myc.myc < myc.threshold
+#     return DivisionDestiny()
+#   else
+#     return nothing
+#   end
+# end
+
+"Step function that will help the cell to commit to division"
 function step(myc::MycTimer, time::Time, Δt::Duration)::Union{CellEvent, Nothing}
   myc.myc *= exp(-myc.λ*Δt)
-  if myc.myc < myc.threshold
-    return DivisionDestiny()
+  if myc.myc > myc.threshold
+   
+    return DecideToDivide()
   else
     return nothing
   end
@@ -77,11 +95,22 @@ end
 "Daughter cells inherit the mother's Myc timer"
 inherit(myc::MycTimer, ::Time) = myc
 
-"Once destiny is reached we need to tell the division timer to stop dividing"
-function destinyReached(::DivisionDestiny, cell::Cell, ::Time)
+# "Once destiny is reached we need to tell the division timer to stop dividing"
+# function destinyReached(::DivisionDestiny, cell::Cell, ::Time)
+#   for timer in cell.timers
+#     if typeof(timer) == DivisionTimer
+#       timer.reachedDestiny = true
+#     end
+#   end
+# end
+
+"Once threshold is detected the cell should commit to divide"
+function commitToDivide(::DecideToDivide, cell::Cell, ::Time)
   for timer in cell.timers
-    if typeof(timer) == DivisionTimer
-      timer.reachedDestiny = true
+    if typeof(timer) == DivisionTimer && timer.timeInState > min_duration_G1
+      
+      timer.IsOutG1 = true
+      timer.timeInState=0
     end
   end
 end
@@ -125,28 +154,42 @@ end
 
 #----------------------------------------------------------------------
 #------------------ Division machinery --------------------
-"Time to divide drawn from distribution"
+
 mutable struct DivisionTimer <: FateTimer
   nextDivision::Float64
   reachedDestiny::Bool
+  IsOutG1::Bool
+  timeInState::Int
 end
 "Constructor for new cells"
-DivisionTimer(division::DistributionParmSet) = DivisionTimer(sample(division), false)
+DivisionTimer(division::DistributionParmSet) = DivisionTimer(sample(division), false,false,0)
+
+# function step(timer::DivisionTimer, time::Float64, ::Float64) 
+#   if shouldDivide(timer,time)
+#     return Division()
+#   else
+#     return nothing
+#   end
+# end
 
 function step(timer::DivisionTimer, time::Float64, ::Float64) 
-  if time>timer.nextDivision
+  if shouldDivide(timer,time)
     return Division()
   else
+    timer.timeInState+=1
     return nothing
   end
 end
 
 "Daughter cells get a new division timer"
 inherit(::DivisionTimer, time::Time) = DivisionTimer(λ_subsequentDivision, time)
-DivisionTimer(r::DistributionParmSet, start::Time) = DivisionTimer(sample(r) + start, false)
+DivisionTimer(r::DistributionParmSet, start::Time) = DivisionTimer(sample(r) + start, false,false,0)
 
 "Indicate the cell will divide. Must be earlier than destiny and after the next division time"
-shouldDivide(division::DivisionTimer, time::Time) = !division.reachedDestiny && time > division.nextDivision
+# shouldDivide(division::DivisionTimer, time::Time) = !division.reachedDestiny && time > division.nextDivision && division.IsInG2 && division.timeInState > duration_SG2M
+"Below I have taken the time to divide and the division destiny out of the picture and I am just using the cell cycle to control division"
+shouldDivide(division::DivisionTimer, time::Time) =  division.IsOutG1 && division.timeInState > duration_SG2M
+
 #----------------------------------------------------------
 
 #--------------------- Death machinery --------------------
@@ -205,14 +248,14 @@ The current free level of the IL7 in the system
 """
 
 affinity_to_cell=15
-production_rate=1000.00
-absorption_rate_IL7=1.00
+production_rate=4.00
+absorption_rate_IL7=0.01
 #---------Environment type and population creation-----
 mutable struct IL7<: EnvironmentalAgent
   concentration::Float64
 end
 
-makeIL7()=IL7(10000.00)
+makeIL7()=IL7(6.00)
 
 makeIL7(conc::Float64)=IL7(conc)
 
@@ -225,7 +268,7 @@ Function to create a bunch of environment agents at the start of the simulation
 function environmentFactory()::Vector{EnvironmentalAgent}
   environmentAgents=EnvironmentalAgent[]
   
-  IL7_environment=makeIL7(10000.0)
+  IL7_environment=makeIL7(6.0)
  
   push!(environmentAgents,IL7_environment)
   return environmentAgents
@@ -254,7 +297,7 @@ end
 #--------Defining the interact() funciton--------------
 
 
-function interact(IL7::EnvironmentalAgent, cell::Cell{T}, time::Time, Δt::Duration) where T<:CellType
+function interact(IL7::IL7, cell::Cell{T}, time::Time, Δt::Duration) where T<:CellType
   
   α_myc=LogNormalParms(log(log(2)/24), 0.34)
   myc_stim=sample(α_myc)*frac_ocu(IL7.concentration,affinity_to_cell)
@@ -272,4 +315,5 @@ function interact(IL7::EnvironmentalAgent, cell::Cell{T}, time::Time, Δt::Durat
 end
 
 end
+
 
