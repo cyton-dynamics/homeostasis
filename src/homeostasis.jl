@@ -3,10 +3,10 @@ module homeostasis
 
 
 using Cyton
-import Cyton: shouldDie, shouldDivide, inherit, step, stimulate, FateTimer, Stimulus,CytonModel,interact
+import Cyton: shouldDivide, inherit, step, stimulate, interact
 
+export environmentFactory, cellFactory
 
-export interact,environmentFactory,IL7,DeathTimer,shouldDivide,cellFactory,DivisionDestiny,MycTimer,step,inherit,destinyReached, update, DproTimer,DivisionTimer,DecideToDivide,commitToDivide
 #----------------------- Parameters -----------------------
 abstract type Parameters end
 struct NoParms <: Parameters end
@@ -24,7 +24,6 @@ duration_SG2M=6
 λ_mycDecay = LogNormalParms(log(log(2)/24), 0.34)
 mycThreshold = LogNormalParms(log(1), 0.2)
 mycInitial = LogNormalParms(log(2), 0.2)
-
 
 
 λ_dproDecay = LogNormalParms(log(log(2)/150), 0.34)
@@ -49,7 +48,7 @@ function cellFactory(birth::Time=0.0 ;parms::Parameters=NoParms(), cellType::T=G
   addTimer(cell, deathTimer)
 
   #addObserver(DivisionDestiny(), cell, destinyReached)
-  addObserver(DecideToDivide(), cell, commitToDivide)
+  addObserver(Division(), cell, commitToDivide)
 
   return cell
 end
@@ -57,8 +56,6 @@ end
 #------------------- Myc destiny timer --------------------
 "The event that indicates that the cell has reached division destiny"
 struct DivisionDestiny <: CellEvent end
-
-struct DecideToDivide <: CellEvent end 
 
 "The state of the Myc timer"
 mutable struct MycTimer <: FateTimer
@@ -85,8 +82,7 @@ MycTimer(λ::DistributionParmSet, myc::DistributionParmSet, threshold::Distribut
 function step(myc::MycTimer, time::Time, Δt::Duration)::Union{CellEvent, Nothing}
   myc.myc *= exp(-myc.λ*Δt)
   if myc.myc > myc.threshold
-   
-    return DecideToDivide()
+    return Division()
   else
     return nothing
   end
@@ -105,7 +101,7 @@ inherit(myc::MycTimer, ::Time) = myc
 # end
 
 "Once threshold is detected the cell should commit to divide"
-function commitToDivide(::DecideToDivide, cell::Cell, ::Time)
+function commitToDivide(::Division, cell::Cell, ::Time)
   for timer in cell.timers
     if typeof(timer) == DivisionTimer && timer.timeInState > min_duration_G1
       
