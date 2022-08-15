@@ -1,416 +1,263 @@
 
-
 module homeostasis
 
-
 using Cyton
-import Cyton: shouldDivide, inherit, step, stimulate, interact
+import Cyton: inherit, step, interact
+using Parameters: @with_kw
 
-export environmentFactory, cellFactory
+export environmentFactory, cellFactory, DivisionTimer, SurvivalTimer, phase
+export Phase, G1, S, G2M, timeInG1, divisionTimer, survivalTimer
 
-#----------------------- Parameters -----------------------
-abstract type Parameters end
-struct NoParms <: Parameters end
-
-struct trialParameters <:Parameters
-  threshold::Float64
-end
+@enum Phase G1 S G2M
 
 #----------------------------------------------------------
 "Parameters of the Cell Cycle"
-min_duration_G1=3
-duration_S=5
-duration_G2M=2
+minG1Duration = LogNormalParms(log(3), 0.3)
+sDuration = LogNormalParms(log(5), 0.5)
+g2mDuration = LogNormalParms(log(2), 0.2)
 
-
-# Parameters from fitting MR-70 with cyton solver. (σ for subsequent division is a guess)
-λ_subsequentDivision = LogNormalParms(log(11.1), 0.08)
-λ_death = LogNormalParms(log(350), 0.34)
-
-# Made up Parameters
-λ_mycDecay = LogNormalParms(log(log(2)/200), 0.54)
+"Myc parameters"
+tHalf = 24
+λ = log(2)/tHalf
+λ_mycDecay = LogNormalParms(log(λ), 1)
 mycThreshold = LogNormalParms(log(1), 0.2)
-mycInitial = LogNormalParms(log(5), 0.2)
+mycInitial = FixedDistributionParms(0.0)# LogNormalParms(log(10), 0.2)
+α_myc = LogNormalParms(log(1), 0.34)
 
+"Survival protein parameters"
+tHalf = 24
+λ = log(2)/tHalf
+λ_survivalProteinDecay = LogNormalParms(log(λ), 1)
+#survivalProteinThreshold = LogNormalParms(log(1), 0.2)
+survivalProteinInitial = LogNormalParms(log(1), 0.2)
+α_survivalProtein = LogNormalParms(log(1), 0.34)
 
+"IL7 parameters"
+affinity_to_cell = 5
+production_rate = 0.1
+absorption_rate_IL7 = 0.1
 
-λ_dproDecay = LogNormalParms(log(log(2)/60), 0.34)
-#dproThreshold = LogNormalParms(log(1), 0.2)
-dproInitial = LogNormalParms(log(10), 0.2)
+function cellFactory(birth::Time, parms::TrialParameters)
+  cell = Cell(birth)
 
-
-
-"This function creates cells at the beginning of the simulation"
-function cellFactory(birth::Time=0.0 ;parms::Parameters=NoParms(), cellType::T=GenericCell()) where T <: CellType
-  cell = Cell(birth, cellType)
-  myc = MycTimer(λ_mycDecay, mycInitial, mycThreshold)
-  addTimer(cell, myc)
-  dpro = DproTimer(λ_dproDecay, dproInitial, dproThreshold)
-  addTimer(cell, dpro)
-  divisionTimer = DivisionTimer(λ_subsequentDivision)
+  divisionTimer = DivisionTimer(minG1Duration, 
+    sDuration, 
+    g2mDuration, 
+    λ_mycDecay, 
+    α_myc, 
+    mycInitial, 
+    mycThreshold)
   addTimer(cell, divisionTimer)
-"We are not adding the Death Timer anymore. Death entirely depends on the death protien"
-  # deathTimer = DeathTimer(λ_death)
-  # addTimer(cell, deathTimer)
-  #addObserver(DivisionDestiny(), cell, destinyReached)
-  addObserver(Division(), cell, commitToDivide)
-  return cell
 
+  survivalProteinThreshold = LogNormalParms(parms.threshold, 0.2)
+  st = SurvivalTimer(λ_survivalProteinDecay, α_survivalProtein, survivalProteinInitial, survivalProteinThreshold)
+  addTimer(cell, st)
 
-
-end
-
-function cellFactory(birth::Time, parms::trialParameters; cellType::T=GenericCell()) where T <: CellType
-  cell = Cell(birth, cellType)
-  myc = MycTimer(λ_mycDecay, mycInitial, mycThreshold)
-  addTimer(cell, myc)
-  divisionTimer = DivisionTimer(λ_subsequentDivision)
-  addTimer(cell, divisionTimer)
-  dproThreshold=LogNormalParms(parms.threshold, 0.2)
-  dpro = DproTimer(λ_dproDecay, dproInitial, dproThreshold)
-  addTimer(cell, dpro)
-  addObserver(Division(), cell, commitToDivide)
-  
   return cell
 end
+#----------------------------------------------------------
 
+#-------------------- Survival Protien -----------------------
+"The state of the Dpro timer"
+@with_kw mutable struct SurvivalTimer <: FateTimer
+  # Dpro decay rate
+  λ::Float64
+  # Sensitivity to IL7
+  α::Float64
+  # Current level of Dpro
+  survivalProtein::Float64
+  # If Dpro drops below this threshold, then the cell dies
+  threshold::Float64
+end
+function SurvivalTimer(λ::DistributionParmSet, α::DistributionParmSet, dpro::DistributionParmSet, threshold::DistributionParmSet) 
+  SurvivalTimer(; λ=sample(λ), α=sample(α), survivalProtein=sample(dpro)+sample(threshold), threshold=sample(threshold))
+end
 
+function step(st::SurvivalTimer, time::Float64, Δt::Duration)::Union{CellEvent, Nothing}
+  λ = st.λ
+  threshold = st.threshold
+  st.survivalProtein *= exp(-λ*Δt)
+  if st.survivalProtein < threshold
+    return Death()
+  else
+    return nothing
+  end
+end
 
-#------------------- Myc destiny timer --------------------
-"The event that indicates that the cell has reached division destiny"
-struct DivisionDestiny <: CellEvent end
+"Daughter cells inherit the mother's Survival protein timer"
+inherit(st::SurvivalTimer, ::Time) = SurvivalTimer(st)
 
-"The state of the Myc timer"
-mutable struct MycTimer <: FateTimer
+function update(st::SurvivalTimer, ::Time, Δt::Duration, strength::Float64)
+  st.survivalProtein += strength * st.α * Δt
+end
+#----------------------------------------------------------------------
+
+#------------------ Division machinery --------------------
+@with_kw mutable struct DivisionTimer <: FateTimer
+  # This records the time that the cell commits to dividing
+  committedToDivideAt::Union{Nothing, Time}
+
+  # Parameters controlling the
+  minG1Duration::Duration
+  sDuration::Duration
+  g2mDuration::Duration
+
   # Myc decay rate
   λ::Float64
+  # Sensitivity to IL7
+  α::Float64
   # Current level of myc
   myc::Float64
   # If Myc drops below this threshold, no more dividing!
   threshold::Float64
 end
-MycTimer(λ::DistributionParmSet, myc::DistributionParmSet, threshold::DistributionParmSet) = MycTimer(sample(λ), sample(myc), sample(threshold))
+function DivisionTimer(minG1Duration::DistributionParmSet, 
+  sDuration::DistributionParmSet, 
+  g2mDuration::DistributionParmSet,
+  λ::DistributionParmSet, 
+  α::DistributionParmSet, 
+  myc::DistributionParmSet, 
+  threshold::DistributionParmSet) 
 
-# "At each time step Myc decays but is also driven by constant exogenous stimulus"
-# function step(myc::MycTimer, time::Time, Δt::Duration)::Union{CellEvent, Nothing}
-#   myc.myc *= exp(-myc.λ*Δt)
-#   if myc.myc < myc.threshold
-#     return DivisionDestiny()
-#   else
-#     return nothing
-#   end
-# end
+  DivisionTimer(;
+  committedToDivideAt=nothing, 
+  minG1Duration=sample(minG1Duration),
+  sDuration=sample(sDuration),
+  g2mDuration=sample(g2mDuration),
+  λ=sample(λ), 
+  α=sample(α), 
+  myc=sample(myc), 
+  threshold=sample(threshold))
+
+end
+
+timerFor(T::Type, cell::Cell) = first(filter(x -> x isa T, cell.timers))
+divisionTimer(cell::Cell) = timerFor(DivisionTimer, cell)
+survivalTimer(cell::Cell) = timerFor(SurvivalTimer, cell)
+
+function update(myc::DivisionTimer, ::Time, Δt::Duration, strength::Float64)
+  myc.myc += strength * myc.α  * Δt
+end
+
+function phase(cell::Cell, time::Time)
+  divtimer = divisionTimer(cell)
+  return phase(divtimer, time)
+end
+
+"Returns the phase of the cycle and the proportion of time spent in that phase"
+function phase(cycle::DivisionTimer, time::Time)::Tuple{Phase, Union{Nothing, Duration}}
+  t = cycle.committedToDivideAt
+
+  if t === nothing
+    return (G1, nothing)
+  end
+  
+  δt = time - t
+
+  if δt < cycle.minG1Duration
+    return (G1, δt)
+  end
+
+  if δt < cycle.minG1Duration + cycle.sDuration
+    return (S, δt)
+  end
+
+  return (G2M, δt)
+end
+
+function timeInG1(cell::Cell, time::Time)::Duration
+  dt = divisionTimer(cell)
+  cd = dt.committedToDivideAt
+  if cd === nothing
+    return time - cell.birth
+  end
+
+  if time - cd < dt.minG1Duration
+    return time - cell.birth
+  end
+
+  return cd + dt.minG1Duration - cell.birth
+end
+
+cycleTime(myc::DivisionTimer) = myc.minG1Duration + myc.sDuration + myc.g2mDuration
 
 "Step function that will help the cell to commit to division"
-function step(myc::MycTimer, time::Time, Δt::Duration)::Union{CellEvent, Nothing}
+function step(myc::DivisionTimer, time::Time, Δt::Duration)::Union{CellEvent, Nothing}
   myc.myc *= exp(-myc.λ*Δt)
-  if myc.myc > myc.threshold
+
+  (p, δt) = phase(myc, time)
+
+  if p == G1 && δt === nothing && myc.myc > myc.threshold
+    myc.committedToDivideAt = time
+    return nothing
+  end
+
+  if p == G2M && δt >= cycleTime(myc)
     return Division()
   else
     return nothing
   end
 end
 
-"Daughter cells inherit the mother's Myc timer"
-inherit(myc::MycTimer, ::Time) = myc
-
-# "Once destiny is reached we need to tell the division timer to stop dividing"
-# function destinyReached(::DivisionDestiny, cell::Cell, ::Time)
-#   for timer in cell.timers
-#     if typeof(timer) == DivisionTimer
-#       timer.reachedDestiny = true
-#     end
-#   end
-# end
-
-
-
-function OutG1(timer::MycTimer) end
-
-
-  
-
-
-
-"Once threshold is detected the cell should commit to divide"
-function commitToDivide(::Division, cell::Cell, ::Time)
-  for timer in cell.timers 
-    OutG1(timer)
-  end
-end
-
-function update(myc::MycTimer,::Time, Δt::Duration,strength::Float64)
-
-  myc.myc +=strength*(1- exp(-myc.λ*Δt))/myc.λ
-
+"Daughter cells get a new division timer, inherits parents properties"
+function inherit(d::DivisionTimer, ::Time) 
+  DivisionTimer(;
+    committedToDivideAt=nothing, 
+    minG1Duration=d.minG1Duration,
+    sDuration=d.sDuration,
+    g2mDuration=d.g2mDuration,
+    λ=d.λ, 
+    α=d.α, 
+    myc=d.myc,
+    threshold=d.threshold)
 end
 #----------------------------------------------------------
 
-#-------------------- Death Protien -----------------------
-"The state of the Dpro timer"
-# mutable struct DproTimer <: FateTimer
-#   # Dpro decay rate
-#   λ::Float64
-#   # Current level of Dpro
-#   dpro::Float64
-#   # If Dpro drops below this threshold, then the cell dies
-#   threshold::Float64
-# end
-
-mutable struct DproTimer <: FateTimer
-  # Dpro decay rate
-  λ::DistributionParmSet 
-  # Current level of Dpro
-  dpro::Float64
-  # If Dpro drops below this threshold, then the cell dies
-  threshold::DistributionParmSet
-end
-
-
-
-
-#DproTimer(λ::DistributionParmSet, dpro::DistributionParmSet, threshold::DistributionParmSet) = DproTimer(sample(λ), sample(dpro), sample(threshold))
-DproTimer(λ::DistributionParmSet, dpro::DistributionParmSet, threshold::DistributionParmSet) = DproTimer(λ,sample(dpro), threshold)
-
-
-
-"At each time step Dpro decays but is also driven by constant exogenous stimulus"
-# function step(dpro::DproTimer, time::Float64, Δt::Duration)::Union{CellEvent, Nothing}
-#   dpro.dpro *= exp(-dpro.λ*Δt)
-#   if dpro.dpro < dpro.threshold
-#     return Death()
-#   else
-#     return nothing
-#   end
-# end
-
-function step(dpro::DproTimer, time::Float64, Δt::Duration)::Union{CellEvent, Nothing}
-  λ=sample(dpro.λ)
-  threshold=sample(dpro.threshold)
-  dpro.dpro *= exp(-λ*Δt)
-  if dpro.dpro < threshold
-    return Death()
-  else
-    return nothing
-  end
-end
-
-
-
-
-"Daughter cells inherit the mother's Death protien timer"
-inherit(dpro::DproTimer, ::Time) = dpro
-
-# function update(dpro::DproTimer,::Time, Δt::Duration,strength::Float64)
-
-#   dpro.dpro +=strength*(1- exp(-dpro.λ*Δt))/dpro.λ
-
-# end
-
-function update(dpro::DproTimer,::Time, Δt::Duration,strength::Float64)
-  λ=sample(dpro.λ)
-  dpro.dpro +=strength*(1- exp(-λ*Δt))/λ
-end
-
-
-function OutG1(timer::DproTimer) end
-#----------------------------------------------------------------------
-#------------------ Division machinery --------------------
-
-mutable struct DivisionTimer <: FateTimer
-  nextDivision::Float64
-  reachedDestiny::Bool
-  IsOutG1::Bool
-  IsOutS::Bool
-  timeInState::Int
-  timeInG1::Int
-end
-"Constructor for new cells"
-DivisionTimer(division::DistributionParmSet) = DivisionTimer(sample(division), false,false,false,0,0)
-
-# function step(timer::DivisionTimer, time::Float64, ::Float64) 
-#   if shouldDivide(timer,time)
-#     return Division()
-#   else
-#     return nothing
-#   end
-# end
-
-function step(timer::DivisionTimer, time::Float64, ::Float64)
-  if timer.IsOutG1 
-    if timer.timeInState > duration_S
-      timer.IsOutS=true
-      timer.timeInState=0
-    end
-  else
-    timer.timeInG1=timer.timeInState
-  end
-  if shouldDivide(timer,time)
-    return Division()
-  else
-    timer.timeInState+=1
-    return nothing
-  end
-end
-
-"Utitlity function to set the state to post-G1"
-
-function OutG1(timer::DivisionTimer)
-  if timer.timeInState > min_duration_G1
-    timer.IsOutG1 = true
-    timer.timeInG1=timer.timeInState
-    timer.timeInState=0
-  end
-end
-
-
-"Daughter cells get a new division timer"
-inherit(::DivisionTimer, time::Time) = DivisionTimer(λ_subsequentDivision, time)
-DivisionTimer(r::DistributionParmSet, start::Time) = DivisionTimer(sample(r) + start, false,false,false,0,0)
-
-"Indicate the cell will divide. Must be earlier than destiny and after the next division time"
-# shouldDivide(division::DivisionTimer, time::Time) = !division.reachedDestiny && time > division.nextDivision && division.IsInG2 && division.timeInState > duration_SG2M
-"Below I have taken the time to divide and the division destiny out of the picture and I am just using the cell cycle to control division"
-shouldDivide(division::DivisionTimer, time::Time) =  division.IsOutS && division.timeInState > duration_G2M
-
-
-function phase(timer::DivisionTimer)
-  "This function finds the cell cycle phase of the cell"
-  δt=timer.timeInState
-  if timer.IsOutG1
-    if timer.IsOutS
-      
-      return (2,δt)
-    else
-      return (1,δt)
-    end
-  else
-    return (0,δt)
-  end
-end
-
-#----------------------------------------------------------
-
-#--------------------- Death machinery --------------------
-"The death timer"
-struct DeathTimer <: FateTimer
-  timeToDeath::Float64
-  deathTimeDistribution::DistributionParmSet
-end
-"DeathTimer constructor for initial cells"
-function DeathTimer(r::DistributionParmSet)
-  DeathTimer(sample(r), r)
-end
-"DeathTimer constructor for division"
-function DeathTimer(death::DeathTimer, time::Time)
-  DeathTimer(sample(death.deathTimeDistribution)+time, death.deathTimeDistribution)
-end
-
-"On division, daughter cells inherit the death timer"
-inherit(timer::DeathTimer, time::Time) = DeathTimer(timer, time)
-function step(timer::DeathTimer, time::Time, ::Duration)
-  if time > timer.timeToDeath
-    return Death()
-  else
-    return nothing
-  end
-end
-
-function OutG1(timer::DeathTimer) end
-#----------------------------------------------------------
-
-#------------------- Stimulus machinery -------------------
-struct ExogeneousStimulus <: Stimulus
-  strength::Float64
-end
-ExogeneousStimulus(d::DistributionParmSet) = ExogeneousStimulus(sample(d))
-ExogeneousStimulus(d::DistributionParmSet,fractional_occupancy::Float64) = ExogeneousStimulus(sample(d)*fractional_occupancy)
-function stimulate(::FateTimer, ::Stimulus, ::Time, ::Duration) end
-
-function stimulate(myc::MycTimer, stim::ExogeneousStimulus, ::Time, Δt::Duration)
-  myc.myc +=stim.strength*(1- exp(-myc.λ*Δt))/myc.λ
-end
-
-function stimulate(dpro::DproTimer, stim::ExogeneousStimulus, ::Time, Δt::Duration)
-  dpro.dpro +=stim.strength*(1- exp(-dpro.λ*Δt))/dpro.λ
-end
-
-function stimulate(cell::Cell{GenericCell}, stim::ExogeneousStimulus, time::Time, Δt::Duration)
-  for timer in cell.timers
-    stimulate(timer, stim, time, Δt)
-  end
-end
-#----------------------------------------------------------
 #------------------------------Agent based modelling of IL7------
 
-"""
-The current free level of the IL7 in the system 
-
-"""
-
-affinity_to_cell=5
-production_rate=1
-absorption_rate_IL7=0.01
 #---------Environment type and population creation-----
-mutable struct IL7<: EnvironmentalAgent
+mutable struct IL7 <: EnvironmentalAgent
   concentration::Float64
 end
 
-makeIL7()=IL7(5.00)
-
-makeIL7(conc::Float64)=IL7(conc)
+makeIL7(conc::Float64=5.0) = IL7(conc)
 
 """
 environmentFactory()
-nEnvAgents:: Number of environment agents you want 
+
 Function to create a bunch of environment agents at the start of the simulation
 """
 
-function environmentFactory()::Vector{EnvironmentalAgent}
-  environmentAgents=EnvironmentalAgent[]
-  IL7_environment=makeIL7(5.0)
-  push!(environmentAgents,IL7_environment)
-  return environmentAgents
-end
+environmentFactory()::Vector{EnvironmentalAgent} = [makeIL7(0.0)]
 
-function frac_ocu(concentration::Float64,affinity_to_cell::Int)
-  if concentration<0
-    @warn "CONCENTRATION GOING BELOW 0...INVALID MODEL "
-    @error "Model terminated due to undefined value of concentration"
-    throw(error())
-    return 0.0
-  end
-  frac_ocu=log(concentration)^affinity_to_cell/(1+log(concentration)^affinity_to_cell)
+function frac_ocu(concentration::Float64, affinity_to_cell::Int)
+  frac_ocu = concentration^affinity_to_cell/(1+concentration^affinity_to_cell)
   return frac_ocu
 end
 
-function step(IL7::IL7,time::Time,Δt::Duration,model::CytonModel )
-  number_of_cells=length(model.cells)
-  IL7.concentration+=production_rate*Δt 
-  IL7.concentration-=number_of_cells*absorption_rate_IL7*Δt*frac_ocu(IL7.concentration,affinity_to_cell)
+function step(iL7::IL7, time::Time, Δt::Duration, model::CytonModel)
+  number_of_cells = length(model.cells)
+  concentration = iL7.concentration
+  concentration += production_rate * Δt
+  concentration -= number_of_cells * absorption_rate_IL7 * Δt * frac_ocu(iL7.concentration, affinity_to_cell)
+  if concentration < 0
+    s = "CONCENTRATION=$(concentration) GOING BELOW 0!!!\n"
+    s *= "Forcing concentration to 0."
+    s *= "This suggests numerical instability. You should fix this!"
+    @warn s
+    concentration = 0
+  end
+  iL7.concentration = concentration
   return nothing
 end
-#------------------------------------------------------
+#--------------------------------------------------------]
 
 
-#--------Defining the interact() funciton--------------
-
-
-function interact(IL7::IL7, cell::Cell{T}, time::Time, Δt::Duration) where T<:CellType
-  
-  α_myc=LogNormalParms(log(log(2)/24), 0.34)
-  myc_stim=sample(α_myc)*frac_ocu(IL7.concentration,affinity_to_cell)
-  α_dpro=LogNormalParms(log(log(2)/5), 0.34)
-  dpro_stim=sample(α_dpro)*frac_ocu(IL7.concentration,affinity_to_cell)
-  
-  
-  myctimer=filter(timer->typeof(timer)==MycTimer,cell.timers)
-  dprotimer=filter(timer->typeof(timer)==DproTimer,cell.timers)
-  
-
-  update(myctimer[1],time,Δt,myc_stim)
-  update(dprotimer[1],time,Δt,dpro_stim) 
-
+#---------- Defining the interact() funciton ------------
+function interact(iL7::IL7, cell::Cell, time::Time, Δt::Duration)
+  o = frac_ocu(iL7.concentration, affinity_to_cell)
+  update(divisionTimer(cell), time, Δt, o)
+  update(survivalTimer(cell), time, Δt, o) 
 end
 
 end 
