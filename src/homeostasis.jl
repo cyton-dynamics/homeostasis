@@ -6,7 +6,7 @@ import Cyton: inherit, step, interact
 using Parameters: @with_kw
 
 export environmentFactory, cellFactory, DivisionTimer, SurvivalTimer, phase
-export Phase, G1, S, G2M, timeInG1, divisionTimer, survivalTimer
+export Phase, G1, S, G2M, timeInG1, divisionTimer, survivalTimer, TrialParameters
 
 @enum Phase G1 S G2M
 
@@ -36,6 +36,17 @@ survivalProteinInitial = LogNormalParms(log(1), 0.2)
 affinity_to_cell = 5
 production_rate = 0.1
 absorption_rate_IL7 = 0.1
+
+#----------------------- Parameters -----------------------
+abstract type Parameters end
+struct NoParms <: Parameters end
+
+struct TrialParameters <: Parameters
+  trial::Int
+  threshold::Float64
+  initPopulationSize::Int
+end
+Base.show(io::IO, parms::TrialParameters) = print(io, "trial=$(parms.trial) startPopulation=$(parms.initPopulationSize) threshold=$(parms.threshold)")
 
 function cellFactory(birth::Time, parms::TrialParameters)
   cell = Cell(birth)

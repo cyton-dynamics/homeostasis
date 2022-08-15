@@ -1,6 +1,8 @@
 import Cairo, Fontconfig
 #
 using Cyton
+
+push!(LOAD_PATH, pwd())
 using homeostasis
 
 using DataFrames, Gadfly, Statistics, Serialization
@@ -18,16 +20,6 @@ Gadfly.push_theme(Theme(
   line_width = 2pt
   ))
 
-#----------------------- Parameters -----------------------
-abstract type Parameters end
-struct NoParms <: Parameters end
-
-struct TrialParameters <:Parameters
-  trial::Int
-  threshold::Float64
-  initPopulationSize::Int
-end
-Base.show(io::IO, parms::TrialParameters) = print(io, "trial=$(parms.trial) startPopulation=$(parms.initPopulationSize) threshold=$(parms.threshold)")
 
 #----------------------- Results -----------------------
 struct RunResults

@@ -4,6 +4,7 @@
 *.png
 *.svg
 *.dat
+*.out
 
 .DS_Store
 
