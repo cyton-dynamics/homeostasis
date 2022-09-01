@@ -60,7 +60,7 @@ function cellFactory(birth::Time, parms::TrialParameters)
     mycThreshold)
   addTimer(cell, divisionTimer)
 
-  survivalProteinThreshold = LogNormalParms(parms.threshold, 0.2)
+  survivalProteinThreshold = LogNormalParms(log(parms.threshold), 0.2)
   st = SurvivalTimer(λ_survivalProteinDecay, α_survivalProtein, survivalProteinInitial, survivalProteinThreshold)
   addTimer(cell, st)
 

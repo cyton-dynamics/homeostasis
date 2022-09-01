@@ -5,7 +5,7 @@ using Cyton
 push!(LOAD_PATH, pwd())
 using homeostasis
 
-using DataFrames, Gadfly, Statistics, Serialization
+using DataFrames, Gadfly, Statistics, Serialization, ArgParse
 
 # Gadfly defaults
 Gadfly.set_default_plot_size(20cm, 20cm)
@@ -20,6 +20,8 @@ Gadfly.push_theme(Theme(
   line_width = 2pt
   ))
 
+
+  OUTPUT_DIR = "outputs"
 
 #----------------------- Results -----------------------
 struct RunResults
@@ -93,21 +95,13 @@ function run(model::CytonModel, runDuration::Time, parms::TrialParameters)
   return RunResults(parms, model, generationCounts, cellPhases, proteinLevels)
 end
 
-function doRuns()
-  parameters = TrialParameters[]
-  thresholdList = [0.1, 0.2, 0.3]
-  initPopSizes = [10, 100, 1000]
-  nTrials = 5
-  for threshold in thresholdList
-    for initPopSize in initPopSizes
-      for i in 1:nTrials
-        currentSet = TrialParameters(i, threshold, initPopSize)
-        push!(parameters, currentSet)
-      end
-    end
-  end
+function doRun(pSet)
 
-  Threads.@threads for pSet in parameters
+  resultFileName = OUTPUT_DIR * "/results $(pSet).dat"
+
+  if isfile(resultFileName)
+    @info "$pSet already done, skipping run"
+  else
     @info "-"^30 * " start trial $pSet " * "-"^30
     
     @info "Creating population"
@@ -116,50 +110,97 @@ function doRuns()
     
     @info "Running model"
     result = run(population, 2000.0, pSet)
-    open("results $(pSet).dat", "w") do io
+    Base.Filesystem.mkpath(OUTPUT_DIR)
+    open(resultFileName, "w") do io
       serialize(io, result)
     end
 
-    @info "-"^30 * " end trial $pSet " * "-"^30
   end
 
-  return parameters
+  plotResult(result)
+
+  @info "-"^30 * " end trial $pSet " * "-"^30
+
 end
 
 function loadResults(parameters)
   results = RunResults[]
   for pSet in parameters
-    result = deserialize("results $(pSet).dat")
-    push!(results, result)
+    fn = OUTPUT_DIR * "/results $(pSet).dat"
+    if isfile(fn)
+      result = deserialize(fn)
+      push!(results, result)
+    else
+      @warn "$fn not found"
+    end
   end
 
   return results
 end
 
+function plotResult(result)
+  Base.Filesystem.mkpath(OUTPUT_DIR)
+
+  vars = [:total :gen0 :gen1 :gen2 :gen3 :gen4 :gen5 :gen6 :gen7 :gen8 :genOther]
+  title = "Cell counts=> $(result.parms)"
+  h = plot(result.generationCounts, x=:time, y=Col.value(vars...), color=Col.index(vars...), Geom.line, Guide.title(title))
+  fn = OUTPUT_DIR * "/" * title * ".png"
+  h |> PNG(fn, 15cm, 15cm)
+
+  vars = [:total :G1 :S :G2M]
+  title = "Cell phases=> $(result.parms)"
+  h = plot(result.cellPhases, x=:time, y=Col.value(vars...), color=Col.index(vars...), Geom.line, Guide.title(title))
+  fn = OUTPUT_DIR * "/" * title * ".png"
+  h |> PNG(fn, 15cm, 15cm)
+
+  vars = [:avgMyc, :avgSurvivalProtein, :il7]
+  title = "Protein=> $(result.parms)"
+  h = plot(result.proteinLevels, x=:time, y=Col.value(vars...), color=Col.index(vars...), Geom.line, Guide.title(title))
+  fn = OUTPUT_DIR * "/" * title * ".png"
+  h |> PNG(fn, 15cm, 15cm)
+end
+
 function doPlots(results)
-  Base.Filesystem.mkpath("outputs")
-
-  for result in results
-    vars = [:total :gen0 :gen1 :gen2 :gen3 :gen4 :gen5 :gen6 :gen7 :gen8 :genOther]
-    title = "Cell counts: $(result.parms)"
-    h = plot(result.generationCounts, x=:time, y=Col.value(vars...), color=Col.index(vars...), Geom.line, Guide.title(title))
-    fn = "outputs/" * title * ".png"
-    h |> PNG(fn, 15cm, 15cm)
-
-    vars = [:total :G1 :S :G2M]
-    title = "Cell phases: $(result.parms)"
-    h = plot(result.cellPhases, x=:time, y=Col.value(vars...), color=Col.index(vars...), Geom.line, Guide.title(title))
-    fn = "outputs/" * title * ".png"
-    h |> PNG(fn, 15cm, 15cm)
-
-    vars = [:avgMyc, :avgSurvivalProtein, :il7]
-    title = "Protein: $(result.parms)"
-    h = plot(result.proteinLevels, x=:time, y=Col.value(vars...), color=Col.index(vars...), Geom.line, Guide.title(title))
-    fn = "outputs/" * title * ".png"
-    h |> PNG(fn, 15cm, 15cm)
+  Threads.@threads for result in results
+    plotResult(result)
   end
 end
 
-parameters = doRuns()
-results = loadResults(parameters)
-doPlots(results)
+function parse_commandline()
+  s = ArgParseSettings()
+
+  @add_arg_table! s begin
+      "--trial"
+      help = "A trial number (to distinguish it from repeats with otherwise equal parameters)"
+      arg_type = Int
+      required = true
+
+      "--initial-population"
+      help = "Initial population size"
+      arg_type = Int
+      required = true
+
+      "--threshold"
+      help = "Threshold for the survival protein"
+      arg_type = Float64
+      required = true
+    end
+
+  return parse_args(s)
+end
+
+function main()
+  parsed_args = parse_commandline()
+  initPopSize = parsed_args["initial-populations"]
+  threshold = parsed_args["threshold"]
+  trial = parsed_args["trial"]
+  @show initPopSize
+  @show threshold
+  @show trial
+
+  parms = TrialParameters(;initPopSize=initPopSize, trial=trial, threshold=threshold)
+  doRun(parms)
+end
+
+
+main()
