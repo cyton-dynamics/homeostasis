@@ -191,14 +191,14 @@ end
 
 function main()
   parsed_args = parse_commandline()
-  initPopSize = parsed_args["initial-populations"]
+  initPopSize = parsed_args["initial-population"]
   threshold = parsed_args["threshold"]
   trial = parsed_args["trial"]
   @show initPopSize
   @show threshold
   @show trial
 
-  parms = TrialParameters(;initPopSize=initPopSize, trial=trial, threshold=threshold)
+  parms = TrialParameters(trial, threshold, initPopSize)
   doRun(parms)
 end
 
