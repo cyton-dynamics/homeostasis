@@ -21,6 +21,7 @@ end
 
 parameters = makeParameters()
 
+jobCnt = 0
 for parameter in parameters
 
   resultFileName = OUTPUT_DIR * "/results $(parameter).dat"
@@ -33,8 +34,10 @@ for parameter in parameters
   trial = parameter.trial
   threshold = parameter.threshold
   initPopSize = parameter.initPopulationSize
-  cmd = `sbatch --cpus-per-task=2 --time=2-00:00:00 --mem=200GB --partition=regular --qos=bonus --job-name=il7-homeostasis batch.sh $(trial) $(threshold) $(initPopSize)`
+  cmd = `sbatch --cpus-per-task=2 --time=2-00:00:00 --mem=100GB --partition=regular --qos=bonus --job-name=il7-homeostasis batch.sh $(trial) $(threshold) $(initPopSize)`
   run(cmd)
+
+  global jobCnt += 1
 end
 
-@info "$(length(parameters)) jobs submitted"
+@info "$(jobCnt) jobs submitted"

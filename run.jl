@@ -30,12 +30,23 @@ struct RunResults
   generationCounts::DataFrame
   cellPhases::DataFrame
   proteinLevels::DataFrame
+  divisions::Vector{Time}
 end
 
 function run(model::CytonModel, runDuration::Time, parms::TrialParameters)
   generationCounts = DataFrame(time=Time[], total=[], gen0=[], gen1=[], gen2=[], gen3=[], gen4=[], gen5=[], gen6=[], gen7=[], gen8=[], genOther=[])
   cellPhases = DataFrame(time=Time[], total=[], G1=[], S=[], G2M=[])
   proteinLevels = DataFrame(time=Time[], avgMyc=[], avgSurvivalProtein=[], il7=Float64[])
+
+  # Record divisions in the model by registering an observer for Division events
+  divisions = Time[]
+  sizehint!(divisions, 100000)
+  function divisionCounter(e::CellEvent, time::Time)
+    if e == Division()
+      push!(divisions, time)
+    end
+  end
+  push!(model.eventCallbacks, divisionCounter)
 
   Δt = modelTimeStep(model)
   local tm
@@ -92,7 +103,7 @@ function run(model::CytonModel, runDuration::Time, parms::TrialParameters)
   end
 
   println("Done at model time = $(modelTime(model))")
-  return RunResults(parms, model, generationCounts, cellPhases, proteinLevels)
+  return RunResults(parms, model, generationCounts, cellPhases, proteinLevels, divisions)
 end
 
 function doRun(pSet)
@@ -156,6 +167,11 @@ function plotResult(result)
   vars = [:avgMyc, :avgSurvivalProtein, :il7]
   title = "Protein=> $(result.parms)"
   h = plot(result.proteinLevels, x=:time, y=Col.value(vars...), color=Col.index(vars...), Geom.line, Guide.title(title))
+  fn = OUTPUT_DIR * "/" * title * ".png"
+  h |> PNG(fn, 15cm, 15cm)
+
+  title = "Divisions=> $(result.parms)"
+  h = plot(x=result.divisions, Geom.histogram, Guide.title(title), Guide.xlabel("time"))
   fn = OUTPUT_DIR * "/" * title * ".png"
   h |> PNG(fn, 15cm, 15cm)
 end
