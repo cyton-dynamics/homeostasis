@@ -110,9 +110,9 @@ function doRun(pSet)
 
   resultFileName = OUTPUT_DIR * "/results $(pSet).dat"
 
-  if isfile(resultFileName)
-    @info "$pSet already done, skipping run"
-  else
+  # if isfile(resultFileName)
+    # @info "$pSet already done, skipping run"
+  # else
     @info "-"^30 * " start trial $pSet " * "-"^30
     
     @info "Creating population"
@@ -126,11 +126,11 @@ function doRun(pSet)
       serialize(io, result)
     end
 
-  end
+  # end
 
   plotResult(result)
 
-  @info "-"^30 * " end trial $pSet " * "-"^30
+  @info "-"^30 * " end $pSet " * "-"^30
 
 end
 
@@ -218,5 +218,9 @@ function main()
   doRun(parms)
 end
 
+setAllowTimerInheritanceByReference(true)
+parms = TrialParameters(1, 0.1, 10)
+doRun(parms)
 
-main()
+
+# main()
